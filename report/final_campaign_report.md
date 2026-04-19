@@ -1,6 +1,6 @@
 # Bong Lem Campaign Business Analytics Report
 
-Generated on: 2026-04-19 14:18:18
+Generated on: 2026-04-19 14:24:28
 
 ## 1) Executive KPI Snapshot
 
@@ -20,6 +20,12 @@ Generated on: 2026-04-19 14:18:18
 | GMV (completed orders) | 3,837,000 VND |
 | AOV (completed) | 52,562 VND |
 | Revenue / visitor | 7,379 VND |
+| Unique customers | 70 |
+| Returning customers | 36 |
+| Returning customer rate | 51.4% |
+| Repeat orders | 48 |
+| Returning customer GMV share | 81.9% |
+| Average orders / customer | 1.69 |
 
 ## 2) Key Business Insights
 
@@ -29,6 +35,8 @@ Generated on: 2026-04-19 14:18:18
 - The best revenue week was Week 3 (Mar 11 - Mar 17) with 1,176,000 VND completed GMV.
 - Estimated visitor-to-completed-order conversion was 14.04%.
 - Only 29.7% of campaign orders were marked paid, so payment follow-up is a major operational lever.
+- Returning customers are meaningful: 36 of 70 customers ordered more than once (51.4%).
+- Repeat orders made up 40.7% of all orders, and returning customers contributed 81.9% of completed GMV.
 - Latest-week traffic decreased by 58.5% versus the previous week, so weekly monitoring is needed instead of end-period review only.
 - After cleaning similar referral links, Facebook is the largest known acquisition channel with 74.9% of referral visitors.
 - The audience is concentrated in VN with 90.5% of known visitors.
@@ -175,7 +183,49 @@ Similar referral links were cleaned into canonical sources. For example, `m.face
 | GNU/Linux | 5 | 5 | 1.0% |
 
 
-## 7) Commercial Performance
+## 7) Returning Customer Analysis
+
+Returning customers are identified inside the campaign order data using phone number first, then email, Facebook link, and name as fallback identifiers. The report uses anonymized customer IDs only.
+
+![Customer Mix: One-Time vs Returning](assets/customer_type_count.png)
+
+![First Orders vs Repeat Orders](assets/first_vs_repeat_orders.png)
+
+![Completed GMV by Customer Type](assets/completed_gmv_by_customer_type.png)
+
+![Weekly First vs Repeat Orders](assets/weekly_first_vs_repeat_orders.png)
+
+### Customer Type Summary
+
+| CustomerType | Customers | Orders | CompletedOrders | CompletedGMV | CustomerShare | OrderShare | CompletedGMVShare |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Returning customer | 36 | 84 | 53 | 3,141,000 VND | 51.4% | 71.2% | 81.9% |
+| One-time customer | 34 | 34 | 20 | 696,000 VND | 48.6% | 28.8% | 18.1% |
+
+### First vs Repeat Order Summary
+
+| OrderType | Orders | CompletedOrders | PaidOrders | GMV | CompletedGMV | OrderShare |
+| --- | --- | --- | --- | --- | --- | --- |
+| First order | 70 | 39 | 10 | 2,815,000 VND | 1,441,000 VND | 59.3% |
+| Repeat order | 48 | 34 | 25 | 3,202,000 VND | 2,396,000 VND | 40.7% |
+
+### Top Returning Customers, Anonymized
+
+| Anonymous customer | Orders | Completed orders | Paid orders | Completed GMV | First order date | Last order date | Days active |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| C054 | 8 | 2 | 2 | 325,000 VND | 2026-03-12 | 2026-03-26 | 13 |
+| C030 | 5 | 2 | 0 | 30,000 VND | 2026-03-12 | 2026-03-26 | 14 |
+| C037 | 3 | 2 | 1 | 251,000 VND | 2026-03-12 | 2026-04-12 | 30 |
+| C051 | 3 | 2 | 0 | 75,000 VND | 2026-03-22 | 2026-03-22 | 0 |
+| C029 | 3 | 0 | 0 | 0 VND | 2026-03-22 | 2026-03-22 | 0 |
+| C014 | 2 | 2 | 1 | 184,000 VND | 2026-03-13 | 2026-03-28 | 15 |
+| C035 | 2 | 2 | 1 | 177,000 VND | 2026-03-13 | 2026-04-02 | 20 |
+| C065 | 2 | 1 | 1 | 170,000 VND | 2026-03-13 | 2026-03-21 | 7 |
+| C070 | 2 | 2 | 1 | 153,000 VND | 2026-03-12 | 2026-03-29 | 16 |
+| C039 | 2 | 2 | 1 | 152,000 VND | 2026-03-12 | 2026-04-07 | 25 |
+
+
+## 8) Commercial Performance
 
 ![Order Status Distribution](assets/order_status_distribution.png)
 
@@ -225,29 +275,31 @@ Similar referral links were cleaned into canonical sources. For example, `m.face
 | Bánh cä | 4 | 5 | 100,000 VND | 1 | 20,000 VND | 20,000 VND | 1.2% | 100.0% |
 
 
-## 8) Recommended Action Plan
+## 9) Recommended Action Plan
 
 | Trigger | Action |
 | --- | --- |
 | Weekly traffic drop >20% | Review social posting cadence, ad spend, referral links, and product messages within 24 hours. |
 | Views/visitor below 1.3 | Improve internal links, product recommendations, and clearer calls to action. |
 | Paid rate below 50% | Send payment reminders, clarify bank transfer instructions, and separate unpaid COD from bank transfer issues. |
+| Returning customer rate below 30% | Create a retention offer, bundle, or post-purchase message to encourage second orders. |
 | Facebook dominates referrals | Use UTM links for every Facebook post so the next report can connect posts to visits and orders. |
 | Mobile share above 50% | Prioritize mobile page speed, checkout clarity, and first-screen product information. |
 | Top country concentration above 75% | Focus copy, shipping, payment information, and customer support for the main market first. |
 
 
-## 9) Periodic Tracking Plan
+## 10) Periodic Tracking Plan
 
 | Timing | Tracking activity | Metrics |
 | --- | --- | --- |
 | Every Monday | Update weekly KPI table | Visitors, page views, orders, completed GMV, conversion, paid rate |
 | Mid-week | Check acquisition health | Referral/channel traffic, Facebook link performance, search traffic |
 | After each campaign post | Track campaign effect | Traffic spike, orders, completed orders, revenue per visitor |
+| Weekly | Review retention | Returning customers, repeat orders, returning customer GMV share |
 | Before next campaign | Review product and payment issues | Top products, cancelled orders, unpaid orders, payment method quality |
 
 
-## 10) Data Notes and Limitations
+## 11) Data Notes and Limitations
 
 - Daily traffic source: `total-data/Bong Lem Analytics Data - Visitor_viewer.csv`
 - Base year used for month/day traffic labels: 2026

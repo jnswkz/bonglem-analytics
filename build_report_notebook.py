@@ -294,6 +294,33 @@ cells = [
             return text
 
 
+        def normalize_customer_value(value: object) -> str:
+            text = " ".join(str(value).strip().lower().split())
+            if text in {"", "nan", "none", "null"}:
+                return ""
+            return text
+
+
+        def build_customer_key(row: pd.Series) -> str:
+            phone = re.sub(r"\\D+", "", normalize_customer_value(row.get("customerPhone", "")))
+            if phone:
+                return f"phone:{phone}"
+
+            email = normalize_customer_value(row.get("customerEmail", ""))
+            if email:
+                return f"email:{email}"
+
+            facebook = normalize_customer_value(row.get("facebookLink", ""))
+            if facebook:
+                return f"facebook:{facebook.rstrip('/')}"
+
+            name = normalize_customer_value(row.get("customerName", ""))
+            if name:
+                return f"name:{name}"
+
+            return f"order:{row.get('order_id', '')}"
+
+
         def load_orders(path: Path) -> pd.DataFrame:
             if not path.exists():
                 return pd.DataFrame()
@@ -312,12 +339,34 @@ cells = [
             df["paymentMethod"] = get_col(df, "paymentMethod", "unknown").fillna("unknown").astype(str).str.lower()
             df["paymentStatus"] = get_col(df, "paymentStatus", "unknown").fillna("unknown").astype(str).str.lower()
             df["orderKind"] = get_col(df, "orderKind", "unknown").fillna("unknown").astype(str).str.lower()
+            df["customerPhone"] = get_col(df, "customerPhone", "").fillna("").astype(str)
+            df["customerEmail"] = get_col(df, "customerEmail", "").fillna("").astype(str)
+            df["facebookLink"] = get_col(df, "facebookLink", "").fillna("").astype(str)
+            df["customerName"] = get_col(df, "customerName", "").fillna("").astype(str)
             df["total"] = pd.to_numeric(get_col(df, "total", 0), errors="coerce").fillna(0)
             df["subtotal"] = pd.to_numeric(get_col(df, "subtotal", 0), errors="coerce").fillna(0)
             df["is_completed"] = df["status"].eq("completed")
             df["is_paid"] = df["paymentStatus"].eq("paid")
             df["is_cancelled"] = df["status"].eq("cancelled")
+            df["customer_key"] = df.apply(build_customer_key, axis=1)
             return df
+
+
+        def annotate_customer_orders(orders_df: pd.DataFrame) -> pd.DataFrame:
+            if orders_df.empty:
+                return orders_df.copy()
+
+            out = orders_df.sort_values(["customer_key", "created_at", "order_id"]).copy()
+            customer_codes = {
+                key: f"C{index:03d}"
+                for index, key in enumerate(sorted(out["customer_key"].dropna().unique()), start=1)
+            }
+            out["CustomerID"] = out["customer_key"].map(customer_codes)
+            out["CustomerOrderNumber"] = out.groupby("customer_key").cumcount() + 1
+            out["CustomerTotalOrders"] = out.groupby("customer_key")["order_id"].transform("count")
+            out["CustomerType"] = np.where(out["CustomerTotalOrders"] > 1, "Returning customer", "One-time customer")
+            out["OrderType"] = np.where(out["CustomerOrderNumber"] > 1, "Repeat order", "First order")
+            return out.sort_values("created_at").reset_index(drop=True)
 
 
         def explode_order_items(orders_df: pd.DataFrame) -> pd.DataFrame:
@@ -437,6 +486,7 @@ cells = [
 
         daily = add_week_index(daily, "date", campaign_start)
         orders_campaign = add_week_index(orders_campaign, "created_at", campaign_start)
+        orders_campaign = annotate_customer_orders(orders_campaign)
         items_campaign = explode_order_items(orders_campaign)
 
         print(f"Campaign period: {campaign_start.date()} -> {campaign_end.date()} ({campaign_days} days)")
@@ -464,6 +514,41 @@ cells = [
         completed_gmv = float(orders_campaign.loc[completed_mask, "total"].sum()) if not orders_campaign.empty else 0
         paid_gmv = float(orders_campaign.loc[paid_mask, "total"].sum()) if not orders_campaign.empty else 0
         all_gmv = float(orders_campaign["total"].sum()) if not orders_campaign.empty else 0
+
+        if orders_campaign.empty:
+            customer_summary = pd.DataFrame(
+                columns=[
+                    "CustomerID", "Orders", "CompletedOrders", "PaidOrders", "CancelledOrders",
+                    "GMV", "CompletedGMV", "FirstOrderDate", "LastOrderDate", "CustomerType",
+                    "DaysActive",
+                ]
+            )
+        else:
+            customer_summary = (
+                orders_campaign.groupby(["customer_key", "CustomerID"], as_index=False)
+                .agg(
+                    Orders=("order_id", "count"),
+                    CompletedOrders=("status", lambda s: int((s == "completed").sum())),
+                    PaidOrders=("paymentStatus", lambda s: int((s == "paid").sum())),
+                    CancelledOrders=("status", lambda s: int((s == "cancelled").sum())),
+                    GMV=("total", "sum"),
+                    CompletedGMV=("total", lambda s: float(s[orders_campaign.loc[s.index, "status"].eq("completed")].sum())),
+                    FirstOrderDate=("created_at", "min"),
+                    LastOrderDate=("created_at", "max"),
+                )
+                .sort_values(["Orders", "CompletedGMV"], ascending=False)
+                .reset_index(drop=True)
+            )
+            customer_summary["CustomerType"] = np.where(customer_summary["Orders"] > 1, "Returning customer", "One-time customer")
+            customer_summary["DaysActive"] = (customer_summary["LastOrderDate"] - customer_summary["FirstOrderDate"]).dt.days
+
+        unique_customers = int(len(customer_summary))
+        returning_customers = int((customer_summary["Orders"] > 1).sum()) if not customer_summary.empty else 0
+        returning_customer_rate = safe_div(returning_customers, unique_customers)
+        returning_customer_orders = int(customer_summary.loc[customer_summary["Orders"] > 1, "Orders"].sum()) if not customer_summary.empty else 0
+        repeat_orders = int((orders_campaign["OrderType"] == "Repeat order").sum()) if not orders_campaign.empty else 0
+        returning_completed_gmv = float(customer_summary.loc[customer_summary["Orders"] > 1, "CompletedGMV"].sum()) if not customer_summary.empty else 0
+        one_time_completed_gmv = float(customer_summary.loc[customer_summary["Orders"] == 1, "CompletedGMV"].sum()) if not customer_summary.empty else 0
 
         peak_traffic_day = daily.loc[daily["visitors"].idxmax()]
         peak_pageview_day = daily.loc[daily["page_views"].idxmax()]
@@ -496,6 +581,14 @@ cells = [
             "GMV (Paid Orders)": paid_gmv,
             "AOV (Completed)": safe_div(completed_gmv, completed_orders),
             "Revenue / Visitor (Completed GMV)": safe_div(completed_gmv, visitors_total),
+            "Unique Customers": unique_customers,
+            "Returning Customers": returning_customers,
+            "Returning Customer Rate": returning_customer_rate,
+            "Repeat Orders": repeat_orders,
+            "Orders From Returning Customers": returning_customer_orders,
+            "Returning Customer Completed GMV": returning_completed_gmv,
+            "Returning Customer GMV Share": safe_div(returning_completed_gmv, completed_gmv),
+            "Average Orders / Customer": safe_div(len(orders_campaign), unique_customers),
         }
 
         kpi_df = pd.DataFrame(
@@ -537,18 +630,23 @@ cells = [
                 PaidOrders=("paymentStatus", lambda s: int((s == "paid").sum())),
                 CancelledOrders=("status", lambda s: int((s == "cancelled").sum())),
                 PendingOrders=("status", lambda s: int((s == "pending").sum())),
+                FirstOrders=("OrderType", lambda s: int((s == "First order").sum())),
+                RepeatOrders=("OrderType", lambda s: int((s == "Repeat order").sum())),
+                UniqueCustomers=("customer_key", "nunique"),
+                ReturningCustomerOrders=("CustomerType", lambda s: int((s == "Returning customer").sum())),
                 GMV=("total", "sum"),
                 CompletedGMV=("total", lambda s: float(s[orders_campaign.loc[s.index, "status"].eq("completed")].sum())),
                 PaidGMV=("total", lambda s: float(s[orders_campaign.loc[s.index, "paymentStatus"].eq("paid")].sum())),
             )
 
         weekly = weekly_traffic.merge(weekly_orders, on="week_no", how="left").fillna(0)
-        for col in ["Orders", "CompletedOrders", "PaidOrders", "CancelledOrders", "PendingOrders"]:
+        for col in ["Orders", "CompletedOrders", "PaidOrders", "CancelledOrders", "PendingOrders", "FirstOrders", "RepeatOrders", "UniqueCustomers", "ReturningCustomerOrders"]:
             weekly[col] = weekly[col].astype(int)
         weekly["CompletionRate"] = np.where(weekly["Orders"] > 0, weekly["CompletedOrders"] / weekly["Orders"], 0)
         weekly["PaidRate"] = np.where(weekly["Orders"] > 0, weekly["PaidOrders"] / weekly["Orders"], 0)
         weekly["CancelRate"] = np.where(weekly["Orders"] > 0, weekly["CancelledOrders"] / weekly["Orders"], 0)
         weekly["EstConversion"] = np.where(weekly["Visitors"] > 0, weekly["CompletedOrders"] / weekly["Visitors"], 0)
+        weekly["RepeatOrderRate"] = np.where(weekly["Orders"] > 0, weekly["RepeatOrders"] / weekly["Orders"], 0)
         weekly["RevenuePerVisitor"] = np.where(weekly["Visitors"] > 0, weekly["CompletedGMV"] / weekly["Visitors"], 0)
         weekly["AOVCompleted"] = np.where(weekly["CompletedOrders"] > 0, weekly["CompletedGMV"] / weekly["CompletedOrders"], 0)
         weekly["WoW Visitors %"] = weekly["Visitors"].pct_change().replace([np.inf, -np.inf], np.nan)
@@ -665,6 +763,46 @@ cells = [
             product_table["RevenueShare"] = np.where(total_completed_revenue > 0, product_table["CompletedRevenue"] / total_completed_revenue, 0)
             product_table["CumulativeRevenueShare"] = product_table["RevenueShare"].cumsum()
 
+        if customer_summary.empty:
+            customer_type_table = pd.DataFrame(columns=["CustomerType", "Customers", "Orders", "CompletedOrders", "CompletedGMV", "CustomerShare", "OrderShare", "CompletedGMVShare"])
+            order_type_table = pd.DataFrame(columns=["OrderType", "Orders", "CompletedOrders", "PaidOrders", "GMV", "CompletedGMV", "OrderShare"])
+            top_returning_customers = pd.DataFrame(columns=["CustomerID", "Orders", "CompletedOrders", "PaidOrders", "CompletedGMV", "FirstOrderDate", "LastOrderDate", "DaysActive"])
+        else:
+            customer_type_table = (
+                customer_summary.groupby("CustomerType", as_index=False)
+                .agg(
+                    Customers=("CustomerID", "nunique"),
+                    Orders=("Orders", "sum"),
+                    CompletedOrders=("CompletedOrders", "sum"),
+                    CompletedGMV=("CompletedGMV", "sum"),
+                )
+                .sort_values("Customers", ascending=False)
+            )
+            customer_type_table["CustomerShare"] = np.where(unique_customers > 0, customer_type_table["Customers"] / unique_customers, 0)
+            customer_type_table["OrderShare"] = np.where(len(orders_campaign) > 0, customer_type_table["Orders"] / len(orders_campaign), 0)
+            customer_type_table["CompletedGMVShare"] = np.where(completed_gmv > 0, customer_type_table["CompletedGMV"] / completed_gmv, 0)
+
+            order_type_table = (
+                orders_campaign.groupby("OrderType", as_index=False)
+                .agg(
+                    Orders=("order_id", "count"),
+                    CompletedOrders=("status", lambda s: int((s == "completed").sum())),
+                    PaidOrders=("paymentStatus", lambda s: int((s == "paid").sum())),
+                    GMV=("total", "sum"),
+                    CompletedGMV=("total", lambda s: float(s[orders_campaign.loc[s.index, "status"].eq("completed")].sum())),
+                )
+                .sort_values("Orders", ascending=False)
+            )
+            order_type_table["OrderShare"] = np.where(len(orders_campaign) > 0, order_type_table["Orders"] / len(orders_campaign), 0)
+
+            top_returning_customers = (
+                customer_summary[customer_summary["Orders"] > 1]
+                .sort_values(["Orders", "CompletedGMV"], ascending=False)
+                .head(10)
+                [["CustomerID", "Orders", "CompletedOrders", "PaidOrders", "CompletedGMV", "FirstOrderDate", "LastOrderDate", "DaysActive"]]
+                .copy()
+            )
+
         top_traffic_days = daily_business.sort_values(["visitors", "page_views"], ascending=False).head(10)
 
         print("Cleaned referrals: raw links mapped into canonical sources")
@@ -682,6 +820,10 @@ cells = [
         display(payment_method_table)
         display(payment_status_table)
         display(product_table.head(15))
+        print("Returning customer analytics")
+        display(customer_type_table)
+        display(order_type_table)
+        display(top_returning_customers)
         """,
         "cell-05",
     ),
@@ -809,6 +951,27 @@ cells = [
         ax.barh(product_qty_plot["Product"], product_qty_plot["Quantity"], color="#db2777")
         finish_standalone(fig, ax, "top_products_quantity.png", "Top Products by Quantity Sold", "Quantity", None)
 
+        customer_type_plot = customer_type_table.sort_values("Customers", ascending=False)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.bar(customer_type_plot["CustomerType"], customer_type_plot["Customers"], color=["#2563eb", "#f97316"][: len(customer_type_plot)])
+        finish_standalone(fig, ax, "customer_type_count.png", "Customer Mix: One-Time vs Returning", "Customer type", "Customers")
+
+        order_type_plot = order_type_table.sort_values("Orders", ascending=False)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.bar(order_type_plot["OrderType"], order_type_plot["Orders"], color=["#16a34a", "#7c3aed"][: len(order_type_plot)])
+        finish_standalone(fig, ax, "first_vs_repeat_orders.png", "First Orders vs Repeat Orders", "Order type", "Orders")
+
+        revenue_customer_plot = customer_type_table.sort_values("CompletedGMV", ascending=False)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.bar(revenue_customer_plot["CustomerType"], revenue_customer_plot["CompletedGMV"], color=["#0f766e", "#db2777"][: len(revenue_customer_plot)])
+        finish_standalone(fig, ax, "completed_gmv_by_customer_type.png", "Completed GMV by Customer Type", "Customer type", "Completed GMV")
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.bar(weekly["week_no"], weekly["FirstOrders"], label="First orders", color="#2563eb")
+        ax.bar(weekly["week_no"], weekly["RepeatOrders"], bottom=weekly["FirstOrders"], label="Repeat orders", color="#f97316")
+        ax.legend()
+        finish_standalone(fig, ax, "weekly_first_vs_repeat_orders.png", "Weekly First vs Repeat Orders", "Week", "Orders")
+
         print("Saved standalone chart assets:")
         display(pd.DataFrame([{"Chart": title, "File": path.as_posix()} for title, path in chart_files.items()]))
         """,
@@ -876,6 +1039,46 @@ cells = [
             return out
 
 
+        def formatted_customer_type_table() -> pd.DataFrame:
+            out = customer_type_table.copy()
+            if out.empty:
+                return out
+            out["CompletedGMV"] = out["CompletedGMV"].map(format_currency)
+            for col in ["CustomerShare", "OrderShare", "CompletedGMVShare"]:
+                out[col] = out[col].map(lambda x: format_pct(x, 1))
+            return out
+
+
+        def formatted_order_type_table() -> pd.DataFrame:
+            out = order_type_table.copy()
+            if out.empty:
+                return out
+            out["GMV"] = out["GMV"].map(format_currency)
+            out["CompletedGMV"] = out["CompletedGMV"].map(format_currency)
+            out["OrderShare"] = out["OrderShare"].map(lambda x: format_pct(x, 1))
+            return out
+
+
+        def formatted_top_returning_customers() -> pd.DataFrame:
+            out = top_returning_customers.copy()
+            if out.empty:
+                return out
+            out["FirstOrderDate"] = out["FirstOrderDate"].dt.date.astype(str)
+            out["LastOrderDate"] = out["LastOrderDate"].dt.date.astype(str)
+            out["CompletedGMV"] = out["CompletedGMV"].map(format_currency)
+            return out.rename(
+                columns={
+                    "CustomerID": "Anonymous customer",
+                    "CompletedOrders": "Completed orders",
+                    "PaidOrders": "Paid orders",
+                    "CompletedGMV": "Completed GMV",
+                    "FirstOrderDate": "First order date",
+                    "LastOrderDate": "Last order date",
+                    "DaysActive": "Days active",
+                }
+            )
+
+
         def image_markdown(title: str) -> list[str]:
             rel = chart_files[title].relative_to(REPORT_DIR).as_posix()
             return [f"![{title}]({rel})", ""]
@@ -897,6 +1100,8 @@ cells = [
             f"The best revenue week was Week {int(best_revenue_week['week_no'])} ({best_revenue_week['WeekLabel']}) with {format_currency(best_revenue_week['CompletedGMV'])} completed GMV.",
             f"Estimated visitor-to-completed-order conversion was {format_pct(order_kpis['Visitor -> Completed Order Rate'], 2)}.",
             f"Only {format_pct(order_kpis['Paid Rate'], 1)} of campaign orders were marked paid, so payment follow-up is a major operational lever.",
+            f"Returning customers are meaningful: {format_int(returning_customers)} of {format_int(unique_customers)} customers ordered more than once ({format_pct(returning_customer_rate, 1)}).",
+            f"Repeat orders made up {format_pct(safe_div(repeat_orders, len(orders_campaign)), 1)} of all orders, and returning customers contributed {format_pct(order_kpis['Returning Customer GMV Share'], 1)} of completed GMV.",
         ]
 
         if previous_week is not None and not pd.isna(latest_week["WoW Visitors %"]):
@@ -920,6 +1125,7 @@ cells = [
                 ["Weekly traffic drop >20%", "Review social posting cadence, ad spend, referral links, and product messages within 24 hours."],
                 ["Views/visitor below 1.3", "Improve internal links, product recommendations, and clearer calls to action."],
                 ["Paid rate below 50%", "Send payment reminders, clarify bank transfer instructions, and separate unpaid COD from bank transfer issues."],
+                ["Returning customer rate below 30%", "Create a retention offer, bundle, or post-purchase message to encourage second orders."],
                 ["Facebook dominates referrals", "Use UTM links for every Facebook post so the next report can connect posts to visits and orders."],
                 ["Mobile share above 50%", "Prioritize mobile page speed, checkout clarity, and first-screen product information."],
                 ["Top country concentration above 75%", "Focus copy, shipping, payment information, and customer support for the main market first."],
@@ -932,6 +1138,7 @@ cells = [
                 ["Every Monday", "Update weekly KPI table", "Visitors, page views, orders, completed GMV, conversion, paid rate"],
                 ["Mid-week", "Check acquisition health", "Referral/channel traffic, Facebook link performance, search traffic"],
                 ["After each campaign post", "Track campaign effect", "Traffic spike, orders, completed orders, revenue per visitor"],
+                ["Weekly", "Review retention", "Returning customers, repeat orders, returning customer GMV share"],
                 ["Before next campaign", "Review product and payment issues", "Top products, cancelled orders, unpaid orders, payment method quality"],
             ],
             columns=["Timing", "Tracking activity", "Metrics"],
@@ -953,6 +1160,12 @@ cells = [
                 ["GMV (completed orders)", format_currency(order_kpis["GMV (Completed Orders)"])],
                 ["AOV (completed)", format_currency(order_kpis["AOV (Completed)"])],
                 ["Revenue / visitor", format_currency(order_kpis["Revenue / Visitor (Completed GMV)"])],
+                ["Unique customers", format_int(order_kpis["Unique Customers"])],
+                ["Returning customers", format_int(order_kpis["Returning Customers"])],
+                ["Returning customer rate", format_pct(order_kpis["Returning Customer Rate"], 1)],
+                ["Repeat orders", format_int(order_kpis["Repeat Orders"])],
+                ["Returning customer GMV share", format_pct(order_kpis["Returning Customer GMV Share"], 1)],
+                ["Average orders / customer", format_float(order_kpis["Average Orders / Customer"], 2)],
             ],
             columns=["Metric", "Value"],
         )
@@ -1032,7 +1245,20 @@ cells = [
         final_lines.extend(["### Devices", "", md_table(formatted_segment(top_devices)[["Device", "Visitors", "Total", "VisitorShare"]]), ""])
         final_lines.extend(["### Operating Systems", "", md_table(formatted_segment(top_os)[["OperatingSystem", "Visitors", "Total", "VisitorShare"]]), ""])
 
-        final_lines.extend(["", "## 7) Commercial Performance", ""])
+        final_lines.extend(["", "## 7) Returning Customer Analysis", ""])
+        final_lines.extend(
+            [
+                "Returning customers are identified inside the campaign order data using phone number first, then email, Facebook link, and name as fallback identifiers. The report uses anonymized customer IDs only.",
+                "",
+            ]
+        )
+        for title in ["Customer Mix: One-Time vs Returning", "First Orders vs Repeat Orders", "Completed GMV by Customer Type", "Weekly First vs Repeat Orders"]:
+            final_lines.extend(image_markdown(title))
+        final_lines.extend(["### Customer Type Summary", "", md_table(formatted_customer_type_table()), ""])
+        final_lines.extend(["### First vs Repeat Order Summary", "", md_table(formatted_order_type_table()), ""])
+        final_lines.extend(["### Top Returning Customers, Anonymized", "", md_table(formatted_top_returning_customers()), ""])
+
+        final_lines.extend(["", "## 8) Commercial Performance", ""])
         for title in ["Order Status Distribution", "Payment Method Quality", "Top Products by Completed Revenue", "Top Products by Quantity Sold"]:
             final_lines.extend(image_markdown(title))
         final_lines.extend(["### Order Status", "", md_table(formatted_status_table()), ""])
@@ -1040,11 +1266,11 @@ cells = [
         final_lines.extend(["### Payment Status", "", md_table(payment_status_report), ""])
         final_lines.extend(["### Product Performance", "", md_table(formatted_product_table()), ""])
 
-        final_lines.extend(["", "## 8) Recommended Action Plan", "", md_table(action_plan), ""])
-        final_lines.extend(["", "## 9) Periodic Tracking Plan", "", md_table(monitoring_plan), ""])
+        final_lines.extend(["", "## 9) Recommended Action Plan", "", md_table(action_plan), ""])
+        final_lines.extend(["", "## 10) Periodic Tracking Plan", "", md_table(monitoring_plan), ""])
         final_lines.extend(
             [
-                "", "## 10) Data Notes and Limitations", "",
+                "", "## 11) Data Notes and Limitations", "",
                 f"- Daily traffic source: `{traffic_notes['source_file']}`",
                 f"- Base year used for month/day traffic labels: {traffic_notes['base_year']}",
                 f"- Visitor fallback rows fixed from the second numeric column: {traffic_notes['fallback_visitor_rows']}",
